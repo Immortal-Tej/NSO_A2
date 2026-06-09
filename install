@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+"""
+install <openrc> <tag> <ssh_key>
+Deploys the full OpenStack environment.
+"""
+
+import sys
+import time
+import openstack
+from utils import (
+    log, load_openrc, read_servers_conf, get_or_allocate_floating_ips,
+    wait_for_active, build_ssh_config, write_inventory, run_ansible,
+    validate_service, private_ip, floating_ip,
+    FLAVOUR, IMAGE_NAME, NETWORK_CIDR, DNS_SERVER
+)
+
+
+def main():
+    if len(sys.argv) != 4:
+        print("Usage: install <openrc> <tag> <ssh_key>")
+        sys.exit(1)
+
+    openrc, tag, ssh_key = sys.argv[1], sys.argv[2], sys.argv[3]
+    log(f"Starting deployment of {tag} using {openrc} for credentials.")
+
+    load_openrc(openrc)
+    conn = openstack.connect()
+
+    # ── Floating IPs ──────────────────────────────────────────────────────────
+    floating_ips = get_or_allocate_floating_ips(conn, 2)
+    log(f"Floating IPs ready: {[f.floating_ip_address for f in floating_ips]}")
+
+    # ── SSH Key ───────────────────────────────────────────────────────────────
+    key_name = f"{tag}_key"
+    if not conn.compute.find_keypair(key_name):
+        log(f"Adding {key_name} associated with {ssh_key}.")
+        with open(ssh_key + ".pub") as f:
+            conn.compute.create_keypair(name=key_name, public_key=f.read())
+    else:
+        log(f"{key_name} already exists, reusing.")
+
+    # ── Network ───────────────────────────────────────────────────────────────
+    net_name = f"{tag}_network"
+    network = conn.network.find_network(net_name)
+    if not network:
+        log(f"Did not detect {net_name}, adding it.")
+        network = conn.network.create_network(name=net_name)
+        log(f"Added {net_name}.")
+    else:
+        log(f"{net_name} already exists, reusing.")
+
+    # ── Subnet ────────────────────────────────────────────────────────────────
+    sub_name = f"{tag}_subnet"
+    subnet = conn.network.find_subnet(sub_name)
+    if not subnet:
+        log(f"Did not detect {sub_name}, adding it.")
+        subnet = conn.network.create_subnet(
+            name=sub_name,
+            network_id=network.id,
+            ip_version=4,
+            cidr=NETWORK_CIDR,
+            dns_nameservers=[DNS_SERVER]
+        )
+        log(f"Added {sub_name}.")
+    else:
+        log(f"{sub_name} already exists, reusing.")
+
+    # ── Router ────────────────────────────────────────────────────────────────
+    router_name = f"{tag}_router"
+    router = conn.network.find_router(router_name)
+    ext_net = conn.network.find_network("public")
+    if not router:
+        log(f"Did not detect {router_name}, adding it.")
+        router = conn.network.create_router(
+            name=router_name,
+            external_gateway_info={"network_id": ext_net.id}
+        )
+        conn.network.add_interface_to_router(router, subnet_id=subnet.id)
+        log(f"Added {router_name}.")
+        log("Adding networks to router. Done.")
+    else:
+        log(f"{router_name} already exists, reusing.")
+
+    # ── Security Group ────────────────────────────────────────────────────────
+    log("Adding security group(s).")
+    sg_name = f"{tag}_sg"
+    sg = conn.network.find_security_group(sg_name)
+    if not sg:
+        sg = conn.network.create_security_group(
+            name=sg_name, description=f"SG for {tag}")
+        rules = [
+            dict(protocol="tcp",  port_range_min=22,   port_range_max=22,   direction="ingress", remote_ip_prefix="0.0.0.0/0"),
+            dict(protocol="tcp",  port_range_min=5000, port_range_max=5000, direction="ingress", remote_ip_prefix="0.0.0.0/0"),
+            dict(protocol="udp",  port_range_min=6000, port_range_max=6000, direction="ingress", remote_ip_prefix="0.0.0.0/0"),
+            dict(protocol="icmp",                                            direction="ingress", remote_ip_prefix="0.0.0.0/0"),
+            dict(protocol=None,                                              direction="egress",  remote_ip_prefix="0.0.0.0/0"),
+        ]
+        for r in rules:
+            conn.network.create_security_group_rule(security_group_id=sg.id, **r)
+        log(f"Created security group {sg_name}.")
+    else:
+        log(f"{sg_name} already exists, reusing.")
+
+    # ── Image ─────────────────────────────────────────────────────────────────
+    images = [i for i in conn.compute.images() if IMAGE_NAME in i.name]
+    images.sort(key=lambda x: x.updated_at or "", reverse=True)
+    chosen_image = images[0]
+    log(f"Selected image: {chosen_image.name}")
+
+    flavor = conn.compute.find_flavor(FLAVOUR)
+
+    common_kwargs = dict(
+        image_id=chosen_image.id,
+        flavor_id=flavor.id,
+        key_name=key_name,
+        networks=[{"uuid": network.id}],
+        security_groups=[{"name": sg_name}]
+    )
+
+    # ── Bastion ───────────────────────────────────────────────────────────────
+    bastion_name = f"{tag}_bastion"
+    bastion = conn.compute.find_server(bastion_name)
+    if not bastion:
+        log(f"Did not detect {bastion_name}, launching it.")
+        bastion = conn.compute.create_server(
+            name=bastion_name, metadata={"tag": tag}, **common_kwargs)
+    else:
+        log(f"{bastion_name} already exists, reusing.")
+
+    # ── Proxy ─────────────────────────────────────────────────────────────────
+    proxy_name = f"{tag}_proxy"
+    proxy = conn.compute.find_server(proxy_name)
+    if not proxy:
+        log(f"Did not detect {proxy_name}, launching it.")
+        proxy = conn.compute.create_server(
+            name=proxy_name, metadata={"tag": tag}, **common_kwargs)
+    else:
+        log(f"{proxy_name} already exists, reusing.")
+
+    # ── Service Nodes ─────────────────────────────────────────────────────────
+    num_nodes = read_servers_conf()
+    log(f"Will need {num_nodes} nodes (servers.conf), launching them.")
+    nodes = []
+    for i in range(1, num_nodes + 1):
+        node_name = f"{tag}_node{i}"
+        node = conn.compute.find_server(node_name)
+        if not node:
+            node = conn.compute.create_server(
+                name=node_name, metadata={"tag": tag}, **common_kwargs)
+        nodes.append(node)
+    log(f"Launched {num_nodes} node(s). Waiting for them to become active.")
+
+    # ── Wait for ACTIVE ───────────────────────────────────────────────────────
+    bastion = wait_for_active(conn, bastion.id)
+    proxy   = wait_for_active(conn, proxy.id)
+    nodes   = [wait_for_active(conn, n.id) for n in nodes]
+    print()
+    log("All nodes are active.")
+
+    # ── Assign Floating IPs ───────────────────────────────────────────────────
+    def assign_fip(server, fip):
+        if not floating_ip(server):
+            conn.compute.add_floating_ip_to_server(
+                server, fip.floating_ip_address)
+
+    assign_fip(bastion, floating_ips[0])
+    assign_fip(proxy,   floating_ips[1])
+
+    bastion_pub = floating_ips[0].floating_ip_address
+    proxy_pub   = floating_ips[1].floating_ip_address
+
+    # Refresh to get updated addresses
+    bastion = conn.compute.get_server(bastion.id)
+    proxy   = conn.compute.get_server(proxy.id)
+    nodes   = [conn.compute.get_server(n.id) for n in nodes]
+
+    node_ips      = [private_ip(n) for n in nodes]
+    proxy_private = private_ip(proxy)
+
+    # ── SSH Config + Inventory ────────────────────────────────────────────────
+    ssh_config_path = f"{tag}_SSHconfig"
+    inv_path        = f"{tag}_inventory"
+    build_ssh_config(ssh_config_path, bastion_pub, proxy_private, node_ips, ssh_key, tag)
+    write_inventory(inv_path, bastion_pub, proxy_private, node_ips, tag)
+    log(f"SSH config saved to {ssh_config_path}.")
+
+    # ── Ansible ───────────────────────────────────────────────────────────────
+    log("Running playbook.")
+    run_ansible(inv_path, ssh_key, ssh_config_path, tag,
+                proxy_private=proxy_private, node_ips=node_ips)
+    log("Done, solution has been deployed.")
+
+    # ── Validate ──────────────────────────────────────────────────────────────
+    log("Validating operation.")
+    validate_service(proxy_pub)
+
+
+if __name__ == "__main__":
+    main()

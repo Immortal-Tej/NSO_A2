@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""
+cleanup <openrc> <tag> <ssh_key>
+Removes ALL cloud resources created by install for the given tag.
+"""
+
+import sys
+import openstack
+from utils import log, load_openrc
+
+
+def main():
+    if len(sys.argv) < 3:
+        print("Usage: cleanup <openrc> <tag> <ssh_key>")
+        sys.exit(1)
+
+    openrc, tag = sys.argv[1], sys.argv[2]
+    log(f"Cleaning up {tag} using {openrc}.")
+
+    load_openrc(openrc)
+    conn = openstack.connect()
+
+    # ── Servers ───────────────────────────────────────────────────────────────
+    servers = [s for s in conn.compute.servers()
+               if s.metadata.get("tag") == tag
+               or s.name.startswith(f"{tag}_")]
+
+    if servers:
+        log(f"We have {len(servers)} server(s), releasing them.")
+        for s in servers:
+            log(f"Releasing {s.name}")
+            conn.compute.delete_server(s.id)
+        log("Waiting for servers to disappear...")
+        for s in servers:
+            try:
+                conn.compute.wait_for_delete(s)
+            except Exception:
+                pass
+        log("Servers are gone.")
+    else:
+        log("No servers found.")
+
+    # ── Floating IPs ─────────────────────────────────────────────────────────
+    for fip in conn.network.ips():
+        if fip.fixed_ip_address is None:
+            log(f"Releasing floating IP {fip.floating_ip_address}")
+            conn.network.delete_ip(fip.id)
+
+    # ── Security Group ────────────────────────────────────────────────────────
+    sg = conn.network.find_security_group(f"{tag}_sg")
+    if sg:
+        log(f"Removing security group {tag}_sg")
+        conn.network.delete_security_group(sg.id)
+
+    # ── Router ────────────────────────────────────────────────────────────────
+    router = conn.network.find_router(f"{tag}_router")
+    if router:
+        log(f"Removing {tag}_router")
+        subnet = conn.network.find_subnet(f"{tag}_subnet")
+        if subnet:
+            try:
+                conn.network.remove_interface_from_router(
+                    router, subnet_id=subnet.id)
+            except Exception:
+                pass
+        try:
+            conn.network.update_router(
+                router, external_gateway_info=None)
+        except Exception:
+            pass
+        conn.network.delete_router(router.id)
+
+    # ── Subnet ────────────────────────────────────────────────────────────────
+    subnet = conn.network.find_subnet(f"{tag}_subnet")
+    if subnet:
+        log(f"Removing {tag}_subnet")
+        conn.network.delete_subnet(subnet.id)
+
+    # ── Network ───────────────────────────────────────────────────────────────
+    network = conn.network.find_network(f"{tag}_network")
+    if network:
+        log(f"Removing {tag}_network")
+        conn.network.delete_network(network.id)
+
+    # ── Keypair ───────────────────────────────────────────────────────────────
+    kp = conn.compute.find_keypair(f"{tag}_key")
+    if kp:
+        log(f"Removing {tag}_key")
+        conn.compute.delete_keypair(f"{tag}_key")
+
+    # ── Final check ───────────────────────────────────────────────────────────
+    log(f"Checking for {tag} resources in project.")
+    remaining = []
+    if conn.network.find_network(f"{tag}_network"):    remaining.append("(network)")
+    if conn.network.find_subnet(f"{tag}_subnet"):      remaining.append("(subnet)")
+    if conn.network.find_router(f"{tag}_router"):      remaining.append("(router)")
+    if conn.network.find_security_group(f"{tag}_sg"):  remaining.append("(security groups)")
+    if conn.compute.find_keypair(f"{tag}_key"):        remaining.append("(keypairs)")
+
+    if remaining:
+        log(f"WARNING: still present: {' '.join(remaining)}")
+    else:
+        log("(network)(subnet)(router)(security groups)(keypairs)")
+    log("Cleanup done.")
+
+
+if __name__ == "__main__":
+    main()

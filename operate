@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+"""
+operate <openrc> <tag> <ssh_key>
+Runs until CTRL-C. Every 30s checks node count and reconciles.
+"""
+
+import sys
+import time
+import signal
+import subprocess
+import openstack
+from utils import (
+    log, load_openrc, read_servers_conf, wait_for_active,
+    build_ssh_config, write_inventory, run_ansible, validate_service,
+    private_ip, floating_ip,
+    FLAVOUR, IMAGE_NAME, POLL_SECONDS
+)
+
+RUNNING = True
+
+
+def handle_sigint(sig, frame):
+    global RUNNING
+    log("CTRL-C received, stopping operate loop.")
+    RUNNING = False
+
+
+def ping_node(bastion_ip, node_ip, ssh_key):
+    """SSH into bastion and ping a node. Returns True if alive."""
+    cmd = [
+        "ssh",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "ConnectTimeout=5",
+        "-i", ssh_key,
+        f"ubuntu@{bastion_ip}",
+        f"ping -c 1 -W 2 {node_ip} > /dev/null 2>&1 && echo alive || echo dead"
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        return "alive" in result.stdout
+    except Exception:
+        return False
+
+
+def get_nodes(conn, tag):
+    """Return sorted list of ACTIVE service node servers."""
+    nodes = []
+    for s in conn.compute.servers():
+        if (s.metadata.get("tag") == tag
+                and f"{tag}_node" in s.name
+                and s.status == "ACTIVE"):
+            nodes.append(s)
+    return sorted(nodes, key=lambda s: s.name)
+
+
+def next_index(conn, tag):
+    """Find next unused node index."""
+    names = {s.name for s in conn.compute.servers()
+             if s.metadata.get("tag") == tag}
+    i = 1
+    while f"{tag}_node{i}" in names:
+        i += 1
+    return i
+
+
+def add_nodes(conn, tag, count, image_id, flavor_id, key_name, net_id, sg_name):
+    new = []
+    for _ in range(count):
+        idx  = next_index(conn, tag)
+        name = f"{tag}_node{idx}"
+        log(f"Launching new node: {name}")
+        node = conn.compute.create_server(
+            name=name,
+            image_id=image_id,
+            flavor_id=flavor_id,
+            key_name=key_name,
+            networks=[{"uuid": net_id}],
+            security_groups=[{"name": sg_name}],
+            metadata={"tag": tag}
+        )
+        new.append(node)
+    return [wait_for_active(conn, n.id) for n in new]
+
+
+def remove_nodes(conn, nodes, count):
+    to_remove = nodes[-count:]
+    for n in to_remove:
+        log(f"Removing surplus node: {n.name}")
+        conn.compute.delete_server(n.id)
+        conn.compute.wait_for_delete(n)
+
+
+def main():
+    if len(sys.argv) != 4:
+        print("Usage: operate <openrc> <tag> <ssh_key>")
+        sys.exit(1)
+
+    openrc, tag, ssh_key = sys.argv[1], sys.argv[2], sys.argv[3]
+    load_openrc(openrc)
+    conn = openstack.connect()
+
+    signal.signal(signal.SIGINT, handle_sigint)
+
+    # Static references
+    net_id   = conn.network.find_network(f"{tag}_network").id
+    sg_name  = f"{tag}_sg"
+    key_name = f"{tag}_key"
+    image    = next(i for i in conn.compute.images() if IMAGE_NAME in i.name)
+    flavor   = conn.compute.find_flavor(FLAVOUR)
+
+    while RUNNING:
+        desired = read_servers_conf()
+        log(f"Reading servers.conf, we need {desired} nodes.")
+
+        nodes      = get_nodes(conn, tag)
+        bastion    = conn.compute.find_server(f"{tag}_bastion")
+        proxy      = conn.compute.find_server(f"{tag}_proxy")
+        bastion_ip = floating_ip(conn.compute.get_server(bastion.id))
+        proxy_pub  = floating_ip(conn.compute.get_server(proxy.id))
+
+        # Check which nodes are alive via bastion ping
+        node_ips   = [private_ip(n) for n in nodes]
+        alive_ips  = [ip for ip in node_ips
+                      if ping_node(bastion_ip, ip, ssh_key)]
+        alive      = len(alive_ips)
+
+        log(f"Checking solution, we have: {alive} nodes (need {desired}).")
+
+        if alive == desired:
+            log("State matches. Sleeping.")
+        else:
+            if alive < desired:
+                # Remove dead nodes from OpenStack first
+                dead_ips = [ip for ip in node_ips if ip not in alive_ips]
+                for dead_ip in dead_ips:
+                    dead_node = next(
+                        (n for n in nodes if private_ip(n) == dead_ip), None)
+                    if dead_node:
+                        log(f"Detected lost node: {dead_node.name}")
+                        conn.compute.delete_server(dead_node.id)
+                # Add replacements
+                nodes  = get_nodes(conn, tag)
+                gap    = desired - len(nodes)
+                if gap > 0:
+                    add_nodes(conn, tag, gap, image.id, flavor.id,
+                              key_name, net_id, sg_name)
+            else:
+                # Too many — remove surplus
+                surplus = alive - desired
+                remove_nodes(conn, nodes, surplus)
+
+            # Refresh and reconfigure
+            nodes         = get_nodes(conn, tag)
+            node_ips      = [private_ip(n) for n in nodes]
+            proxy_private = private_ip(conn.compute.get_server(proxy.id))
+            ssh_cfg       = f"{tag}_SSHconfig"
+            inv_path      = f"{tag}_inventory"
+
+            build_ssh_config(ssh_cfg, bastion_ip, proxy_private,
+                             node_ips, ssh_key, tag)
+            write_inventory(inv_path, bastion_ip, proxy_private,
+                            node_ips, tag)
+            log("Running playbook.")
+            run_ansible(inv_path, ssh_key, ssh_cfg, tag,
+                        proxy_private=proxy_private, node_ips=node_ips)
+            log("Done, solution has been deployed.")
+            validate_service(proxy_pub)
+
+        if RUNNING:
+            time.sleep(POLL_SECONDS)
+
+
+if __name__ == "__main__":
+    main()

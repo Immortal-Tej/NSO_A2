@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+*_SSHconfig
+*_inventory
+*.log
+.DS_Store

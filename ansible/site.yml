@@ -1,0 +1,24 @@
+---
+- name: Configure all hosts (common)
+  hosts: all
+  become: yes
+  roles:
+    - common
+
+- name: Configure service nodes
+  hosts: nodes
+  become: yes
+  roles:
+    - service_node
+
+- name: Configure proxy
+  hosts: proxy
+  become: yes
+  roles:
+    - proxy
+
+- name: Configure bastion
+  hosts: bastion
+  become: yes
+  roles:
+    - bastion

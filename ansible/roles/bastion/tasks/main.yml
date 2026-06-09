@@ -1,0 +1,49 @@
+---
+- name: Install required packages on bastion
+  apt:
+    name:
+      - python3
+      - python3-pip
+      - iputils-ping
+    state: present
+
+- name: Install Flask for alive.py
+  pip:
+    name: flask
+    executable: pip3
+
+- name: Copy alive.py to bastion
+  copy:
+    src: "{{ playbook_dir }}/../alive.py"
+    dest: /opt/alive.py
+    mode: '0755'
+
+- name: Write node IP list for alive.py
+  copy:
+    dest: /opt/nodes.txt
+    content: |
+      {% for ip in node_ips.split(',') %}
+      {{ ip }}
+      {% endfor %}
+
+- name: Create systemd unit for alive.py
+  copy:
+    dest: /etc/systemd/system/alive.service
+    content: |
+      [Unit]
+      Description=Node Alive Checker
+      After=network.target
+
+      [Service]
+      ExecStart=/usr/bin/python3 /opt/alive.py
+      Restart=always
+
+      [Install]
+      WantedBy=multi-user.target
+
+- name: Enable and start alive service
+  systemd:
+    name: alive
+    enabled: yes
+    state: started
+    daemon_reload: yes

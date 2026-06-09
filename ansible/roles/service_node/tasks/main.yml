@@ -1,0 +1,46 @@
+---
+- name: Copy service.py to node
+  copy:
+    src: "{{ playbook_dir }}/../service.py"
+    dest: /opt/service.py
+    mode: '0755'
+
+- name: Create systemd unit for service.py
+  copy:
+    dest: /etc/systemd/system/service_flask.service
+    content: |
+      [Unit]
+      Description=Flask Service
+      After=network.target
+
+      [Service]
+      ExecStart=/usr/bin/python3 /opt/service.py
+      Restart=always
+
+      [Install]
+      WantedBy=multi-user.target
+
+- name: Enable and start service_flask
+  systemd:
+    name: service_flask
+    enabled: yes
+    state: started
+    daemon_reload: yes
+
+- name: Configure SNMPd to listen on all interfaces
+  lineinfile:
+    path: /etc/snmp/snmpd.conf
+    regexp: '^agentAddress'
+    line: 'agentAddress udp:161,udp6:[::1]:161'
+    backup: yes
+
+- name: Add read-only community string
+  lineinfile:
+    path: /etc/snmp/snmpd.conf
+    line: 'rocommunity public default'
+
+- name: Restart SNMPd
+  systemd:
+    name: snmpd
+    enabled: yes
+    state: restarted

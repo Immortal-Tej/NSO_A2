@@ -1,0 +1,20 @@
+---
+- name: Update apt cache
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+
+- name: Install common packages
+  apt:
+    name:
+      - python3
+      - python3-pip
+      - snmpd
+      - net-tools
+      - iputils-ping
+    state: present
+
+- name: Install Flask via pip
+  pip:
+    name: flask
+    executable: pip3
