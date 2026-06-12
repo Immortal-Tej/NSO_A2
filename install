@@ -170,12 +170,26 @@ def main():
     assign_fip(bastion, floating_ips[0])
     assign_fip(proxy,   floating_ips[1])
 
+    # Wait for floating IP assignments to propagate
+    import time as _time
+    _time.sleep(5)
+
     # Refresh to get updated addresses
     bastion = conn.compute.get_server(bastion.id)
     proxy   = conn.compute.get_server(proxy.id)
 
     bastion_pub = floating_ip(bastion)
     proxy_pub   = floating_ip(proxy)
+
+    # If still None, retry a few times
+    for _ in range(6):
+        if bastion_pub and proxy_pub:
+            break
+        _time.sleep(5)
+        bastion = conn.compute.get_server(bastion.id)
+        proxy   = conn.compute.get_server(proxy.id)
+        bastion_pub = floating_ip(bastion)
+        proxy_pub   = floating_ip(proxy)
     log(f"Bastion public IP: {bastion_pub}")
     log(f"Proxy public IP:   {proxy_pub}")
 
