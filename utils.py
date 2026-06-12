@@ -195,12 +195,13 @@ def run_ansible(inventory, ssh_key, ssh_config, tag,
         "ansible-playbook",
         "-i", inventory,
         "--private-key", ssh_key,
-        "--ssh-extra-args", f"-F {ssh_config}",
         "-e", extra_vars,
         "ansible/site.yml"
     ]
+    env = os.environ.copy()
+    env["ANSIBLE_SSH_ARGS"] = f"-F {os.path.abspath(ssh_config)} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
     log(f"Running: {' '.join(cmd)}")
-    result = subprocess.run(cmd)
+    result = subprocess.run(cmd, env=env)
     if result.returncode != 0:
         log("ERROR: Ansible playbook failed.")
         sys.exit(1)
