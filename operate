@@ -162,7 +162,7 @@ def main():
             write_inventory(inv_path, bastion_ip, proxy_private,
                             node_ips, tag, ssh_key)
             log("Running playbook.")
-            run_ansible(inv_path, ssh_key, ssh_cfg, tag,
+            run_ansible(inv_path, ssh_key, ssh_cfg, tag, bastion_ip=bastion_ip,
                         proxy_private=proxy_private, node_ips=node_ips)
             log("Done, solution has been deployed.")
             validate_service(proxy_pub)

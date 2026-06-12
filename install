@@ -192,7 +192,7 @@ def main():
 
     # ── Ansible ───────────────────────────────────────────────────────────────
     log("Running playbook.")
-    run_ansible(inv_path, ssh_key, ssh_config_path, tag,
+    run_ansible(inv_path, ssh_key, ssh_config_path, tag, bastion_ip=bastion_pub,
                 proxy_private=proxy_private, node_ips=node_ips)
     log("Done, solution has been deployed.")
 

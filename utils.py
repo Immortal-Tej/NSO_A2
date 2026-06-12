@@ -140,26 +140,18 @@ def build_ssh_config(path, bastion_ip, proxy_ip, node_ips, ssh_key, tag):
 
 
 def write_inventory(path, bastion_ip, proxy_ip, node_ips, tag, ssh_key=None):
-    key = os.path.abspath(ssh_key) if ssh_key else "~/.ssh/id_rsa"
-    pct_h = "%h"
-    pct_p = "%p"
-    jump_args = (
-        f"'-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
-        f"-o ProxyCommand=ssh -i {key} -o StrictHostKeyChecking=no "
-        f"-o UserKnownHostsFile=/dev/null -W {pct_h}:{pct_p} ubuntu@{bastion_ip}'"
-    )
-    bastion_args = "'-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'"
+    common_args = "'-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'"
     lines = [
         "[bastion]",
-        f"{tag}_bastion ansible_host={bastion_ip} ansible_ssh_common_args={bastion_args}",
+        f"{tag}_bastion ansible_host={bastion_ip} ansible_ssh_common_args={common_args}",
         "",
         "[proxy]",
-        f"{tag}_proxy ansible_host={proxy_ip} ansible_ssh_common_args={jump_args}",
+        f"{tag}_proxy ansible_host={proxy_ip} ansible_ssh_common_args={common_args}",
         "",
         "[nodes]",
     ]
     for i, ip in enumerate(node_ips, 1):
-        lines.append(f"{tag}_node{i} ansible_host={ip} ansible_ssh_common_args={jump_args}")
+        lines.append(f"{tag}_node{i} ansible_host={ip} ansible_ssh_common_args={common_args}")
     lines += [
         "",
         "[all:vars]",
@@ -170,8 +162,24 @@ def write_inventory(path, bastion_ip, proxy_ip, node_ips, tag, ssh_key=None):
         f.write("\n".join(lines) + "\n")
 
 
+def write_ssh_wrapper(bastion_ip, ssh_key, tag):
+    key = os.path.abspath(ssh_key)
+    wrapper_path = os.path.abspath(f"{tag}_ssh_wrapper.sh")
+    content = f"""#!/bin/bash
+exec ssh -i {key} \\
+    -o StrictHostKeyChecking=no \\
+    -o UserKnownHostsFile=/dev/null \\
+    -o "ProxyCommand=ssh -i {key} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p ubuntu@{bastion_ip}" \\
+    "$@"
+"""
+    with open(wrapper_path, 'w') as f:
+        f.write(content)
+    os.chmod(wrapper_path, 0o755)
+    return wrapper_path
+
+
 def run_ansible(inventory, ssh_key, ssh_config, tag,
-                proxy_private=None, node_ips=None):
+                proxy_private=None, node_ips=None, bastion_ip=None):
     extra_vars = f"tag={tag}"
     if proxy_private:
         extra_vars += f" proxy_private_ip={proxy_private}"
@@ -185,7 +193,10 @@ def run_ansible(inventory, ssh_key, ssh_config, tag,
         "ansible/site.yml"
     ]
     env = os.environ.copy()
-    env["ANSIBLE_SSH_ARGS"] = f"-F {os.path.abspath(ssh_config)} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+    if bastion_ip:
+        wrapper = write_ssh_wrapper(bastion_ip, ssh_key, tag)
+        env["ANSIBLE_SSH_EXECUTABLE"] = wrapper
+    env["ANSIBLE_SSH_ARGS"] = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
     log(f"Running playbook.")
     result = subprocess.run(cmd, env=env)
     if result.returncode != 0:
