@@ -96,7 +96,10 @@ def main():
             dict(protocol=None,                                              direction="egress",  remote_ip_prefix="0.0.0.0/0"),
         ]
         for r in rules:
-            conn.network.create_security_group_rule(security_group_id=sg.id, **r)
+            try:
+                conn.network.create_security_group_rule(security_group_id=sg.id, **r)
+            except Exception:
+                pass
         log(f"Created security group {sg_name}.")
     else:
         log(f"{sg_name} already exists, reusing.")
@@ -160,8 +163,11 @@ def main():
     # ── Assign Floating IPs ───────────────────────────────────────────────────
     def assign_fip(server, fip):
         if not floating_ip(server):
-            conn.compute.add_floating_ip_to_server(
-                server, fip.floating_ip_address)
+            # Get the port associated with the server
+            ports = list(conn.network.ports(device_id=server.id))
+            if ports:
+                conn.network.update_ip(
+                    fip.id, port_id=ports[0].id)
 
     assign_fip(bastion, floating_ips[0])
     assign_fip(proxy,   floating_ips[1])

@@ -23,19 +23,36 @@ def log(msg: str):
 
 
 def load_openrc(path: str):
-    """Source an openrc file into the current process environment."""
+    """
+    Source the openrc file into the current environment.
+    For lines with 'read' (password prompt), we skip them since
+    the user must source the file manually before running the script.
+    """
     if not os.path.isfile(path):
         log(f"ERROR: openrc file not found: {path}")
         sys.exit(1)
+
+    # If OS_PASSWORD is already set (user sourced the file), just use it
+    if os.environ.get("OS_PASSWORD"):
+        log("Using OpenStack credentials from environment.")
+        return
+
+    # Otherwise parse the file for static exports (no password prompts)
     with open(path) as f:
         for line in f:
             line = line.strip()
             if line.startswith("export "):
                 line = line[len("export "):]
-            if "=" in line and not line.startswith("#"):
+            if "=" in line and not line.startswith("#") and "read" not in line:
                 key, _, val = line.partition("=")
                 val = val.strip().strip('"').strip("'")
-                os.environ[key.strip()] = val
+                if val:
+                    os.environ[key.strip()] = val
+
+    # After parsing, check if we have a password
+    if not os.environ.get("OS_PASSWORD"):
+        log("ERROR: OS_PASSWORD not set. Please run: source <openrc> first.")
+        sys.exit(1)
 
 
 def read_servers_conf(path: str = "servers.conf") -> int:
@@ -62,7 +79,7 @@ def get_or_allocate_floating_ips(conn, count: int):
     needed = count - len(result)
     if needed > 0:
         log(f"Allocating {needed} new floating IP(s).")
-        ext_net = conn.network.find_network("public")
+        ext_net = conn.network.find_network("External")
         for _ in range(needed):
             fip = conn.network.create_ip(floating_network_id=ext_net.id)
             result.append(fip)
