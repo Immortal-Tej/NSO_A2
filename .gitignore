@@ -5,3 +5,5 @@ __pycache__/
 *_inventory
 *.log
 .DS_Store
+*openrc*
+*openrc.sh
