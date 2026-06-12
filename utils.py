@@ -166,11 +166,19 @@ def write_ssh_wrapper(bastion_ip, ssh_key, tag):
     key = os.path.abspath(ssh_key)
     wrapper_path = os.path.abspath(f"{tag}_ssh_wrapper.sh")
     content = f"""#!/bin/bash
-exec ssh -i {key} \\
-    -o StrictHostKeyChecking=no \\
-    -o UserKnownHostsFile=/dev/null \\
-    -o "ProxyCommand=ssh -i {key} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p ubuntu@{bastion_ip}" \\
-    "$@"
+TARGET=${{@: -1}}
+if [[ "$TARGET" == "{bastion_ip}" ]]; then
+    exec ssh -i {key} \\
+        -o StrictHostKeyChecking=no \\
+        -o UserKnownHostsFile=/dev/null \\
+        "$@"
+else
+    exec ssh -i {key} \\
+        -o StrictHostKeyChecking=no \\
+        -o UserKnownHostsFile=/dev/null \\
+        -o "ProxyCommand=ssh -i {key} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p ubuntu@{bastion_ip}" \\
+        "$@"
+fi
 """
     with open(wrapper_path, 'w') as f:
         f.write(content)
