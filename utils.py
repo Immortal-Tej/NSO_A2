@@ -1,7 +1,3 @@
-"""
-utils.py - shared helpers for install / operate / cleanup
-"""
-
 import os
 import sys
 import time
@@ -9,7 +5,6 @@ import subprocess
 import requests
 from datetime import datetime
 
-# ── Tunables ──────────────────────────────────────────────────────────────────
 FLAVOUR      = "small"
 IMAGE_NAME   = "Ubuntu 24.04"
 NETWORK_CIDR = "192.168.1.0/24"
@@ -23,21 +18,12 @@ def log(msg: str):
 
 
 def load_openrc(path: str):
-    """
-    Source the openrc file into the current environment.
-    For lines with 'read' (password prompt), we skip them since
-    the user must source the file manually before running the script.
-    """
     if not os.path.isfile(path):
         log(f"ERROR: openrc file not found: {path}")
         sys.exit(1)
-
-    # If OS_PASSWORD is already set (user sourced the file), just use it
     if os.environ.get("OS_PASSWORD"):
         log("Using OpenStack credentials from environment.")
         return
-
-    # Otherwise parse the file for static exports (no password prompts)
     with open(path) as f:
         for line in f:
             line = line.strip()
@@ -48,15 +34,12 @@ def load_openrc(path: str):
                 val = val.strip().strip('"').strip("'")
                 if val:
                     os.environ[key.strip()] = val
-
-    # After parsing, check if we have a password
     if not os.environ.get("OS_PASSWORD"):
         log("ERROR: OS_PASSWORD not set. Please run: source <openrc> first.")
         sys.exit(1)
 
 
 def read_servers_conf(path: str = "servers.conf") -> int:
-    """Return the desired node count from servers.conf."""
     if not os.path.isfile(path):
         return 3
     with open(path) as f:
@@ -71,11 +54,13 @@ def read_servers_conf(path: str = "servers.conf") -> int:
 
 
 def get_or_allocate_floating_ips(conn, count: int):
-    """Reuse unassigned floating IPs before allocating new ones."""
-    available = [fip for fip in conn.network.ips()
-                 if fip.fixed_ip_address is None]
-    log(f"Checking floating IPs, we have {len(available)} available.")
-    result = list(available[:count])
+    all_fips   = list(conn.network.ips())
+    unassigned = [f for f in all_fips if f.fixed_ip_address is None]
+    log(f"Checking floating IPs, we have {len(unassigned)} unassigned available.")
+    if len(all_fips) >= count:
+        log(f"Reusing existing {len(all_fips)} floating IP(s).")
+        return all_fips[:count]
+    result = list(unassigned)
     needed = count - len(result)
     if needed > 0:
         log(f"Allocating {needed} new floating IP(s).")
@@ -87,7 +72,6 @@ def get_or_allocate_floating_ips(conn, count: int):
 
 
 def wait_for_active(conn, server_id: str, timeout: int = 300):
-    """Poll until server is ACTIVE."""
     deadline = time.time() + timeout
     print("    ", end="", flush=True)
     while time.time() < deadline:
@@ -107,7 +91,6 @@ def wait_for_active(conn, server_id: str, timeout: int = 300):
 
 
 def private_ip(server):
-    """Return the fixed/private IP of a server."""
     for addrs in server.addresses.values():
         for a in addrs:
             if a["OS-EXT-IPS:type"] == "fixed":
@@ -116,7 +99,6 @@ def private_ip(server):
 
 
 def floating_ip(server):
-    """Return the floating/public IP of a server."""
     for addrs in server.addresses.values():
         for a in addrs:
             if a["OS-EXT-IPS:type"] == "floating":
@@ -125,7 +107,6 @@ def floating_ip(server):
 
 
 def build_ssh_config(path, bastion_ip, proxy_ip, node_ips, ssh_key, tag):
-    """Write SSH config with ProxyJump for private nodes."""
     lines = [
         f"Host {tag}_bastion",
         f"    HostName {bastion_ip}",
@@ -159,7 +140,6 @@ def build_ssh_config(path, bastion_ip, proxy_ip, node_ips, ssh_key, tag):
 
 
 def write_inventory(path, bastion_ip, proxy_ip, node_ips, tag):
-    """Write Ansible inventory file."""
     lines = [
         "[bastion]",
         f"{tag}_bastion ansible_host={bastion_ip}",
@@ -184,13 +164,11 @@ def write_inventory(path, bastion_ip, proxy_ip, node_ips, tag):
 
 def run_ansible(inventory, ssh_key, ssh_config, tag,
                 proxy_private=None, node_ips=None):
-    """Run the Ansible site.yml playbook."""
     extra_vars = f"tag={tag}"
     if proxy_private:
         extra_vars += f" proxy_private_ip={proxy_private}"
     if node_ips:
         extra_vars += f" node_ips={','.join(node_ips)}"
-
     cmd = [
         "ansible-playbook",
         "-i", inventory,
@@ -200,7 +178,7 @@ def run_ansible(inventory, ssh_key, ssh_config, tag,
     ]
     env = os.environ.copy()
     env["ANSIBLE_SSH_ARGS"] = f"-F {os.path.abspath(ssh_config)} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-    log(f"Running: {' '.join(cmd)}")
+    log(f"Running playbook.")
     result = subprocess.run(cmd, env=env)
     if result.returncode != 0:
         log("ERROR: Ansible playbook failed.")
@@ -208,7 +186,6 @@ def run_ansible(inventory, ssh_key, ssh_config, tag,
 
 
 def validate_service(proxy_ip: str, port: int = 5000, attempts: int = 4):
-    """Hit the proxy a few times to confirm round-robin is working."""
     url = f"http://{proxy_ip}:{port}/"
     for i in range(1, attempts + 1):
         try:
