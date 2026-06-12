@@ -190,6 +190,7 @@ def run_ansible(inventory, ssh_key, ssh_config, tag,
         "-i", inventory,
         "--private-key", ssh_key,
         "-e", extra_vars,
+        "--timeout", "30",
         "ansible/site.yml"
     ]
     env = os.environ.copy()
@@ -197,11 +198,16 @@ def run_ansible(inventory, ssh_key, ssh_config, tag,
         wrapper = write_ssh_wrapper(bastion_ip, ssh_key, tag)
         env["ANSIBLE_SSH_EXECUTABLE"] = wrapper
     env["ANSIBLE_SSH_ARGS"] = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+    env["ANSIBLE_HOST_KEY_CHECKING"] = "False"
     log(f"Running playbook.")
-    result = subprocess.run(cmd, env=env)
-    if result.returncode != 0:
-        log("ERROR: Ansible playbook failed.")
-        sys.exit(1)
+    for attempt in range(1, 4):
+        result = subprocess.run(cmd, env=env)
+        if result.returncode == 0:
+            return
+        log(f"Playbook attempt {attempt} failed, retrying in 20s...")
+        time.sleep(20)
+    log("ERROR: Ansible playbook failed after 3 attempts.")
+    sys.exit(1)
 
 
 def validate_service(proxy_ip: str, port: int = 5000, attempts: int = 4):
