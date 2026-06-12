@@ -140,19 +140,15 @@ def build_ssh_config(path, bastion_ip, proxy_ip, node_ips, ssh_key, tag):
 
 
 def write_inventory(path, bastion_ip, proxy_ip, node_ips, tag, ssh_key=None):
+    key = os.path.abspath(ssh_key) if ssh_key else "~/.ssh/id_rsa"
+    pct_h = "%h"
+    pct_p = "%p"
+    jump_args = (
+        f"'-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+        f"-o ProxyCommand=ssh -i {key} -o StrictHostKeyChecking=no "
+        f"-o UserKnownHostsFile=/dev/null -W {pct_h}:{pct_p} ubuntu@{bastion_ip}'"
+    )
     bastion_args = "'-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'"
-    if ssh_key:
-        key = os.path.abspath(ssh_key)
-        jump_args = (
-            f"'-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
-            f"-o ProxyCommand=ssh -i {key} -o StrictHostKeyChecking=no "
-            f"-o UserKnownHostsFile=/dev/null -W %h:%p ubuntu@{bastion_ip}'"
-        )
-    else:
-        jump_args = (
-            f"'-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
-            f"-o ProxyJump=ubuntu@{bastion_ip}'"
-        )
     lines = [
         "[bastion]",
         f"{tag}_bastion ansible_host={bastion_ip} ansible_ssh_common_args={bastion_args}",
