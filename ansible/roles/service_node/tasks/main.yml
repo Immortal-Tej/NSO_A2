@@ -1,4 +1,17 @@
 ---
+- name: Update apt cache
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+
+- name: Install service packages
+  apt:
+    name:
+      - python3
+      - python3-flask
+      - snmpd
+    state: present
+
 - name: Copy service.py to node
   copy:
     src: "{{ playbook_dir }}/../service.py"
@@ -27,17 +40,14 @@
     state: started
     daemon_reload: yes
 
-- name: Configure SNMPd to listen on all interfaces
-  lineinfile:
-    path: /etc/snmp/snmpd.conf
-    regexp: '^agentAddress'
-    line: 'agentAddress udp:161,udp6:[::1]:161'
-    backup: yes
-
-- name: Add read-only community string
-  lineinfile:
-    path: /etc/snmp/snmpd.conf
-    line: 'rocommunity public default'
+- name: Write clean SNMPd config
+  copy:
+    dest: /etc/snmp/snmpd.conf
+    content: |
+      agentAddress udp:161
+      rocommunity public default
+      sysLocation OpenStack Node
+      sysContact admin@localhost
 
 - name: Restart SNMPd
   systemd:
