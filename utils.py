@@ -10,8 +10,8 @@ import requests
 from datetime import datetime
 
 # ── Tunables ──────────────────────────────────────────────────────────────────
-FLAVOUR      = "ssc.small"
-IMAGE_NAME   = "Ubuntu 20.04"
+FLAVOUR      = "small"
+IMAGE_NAME   = "Ubuntu 24.04"
 NETWORK_CIDR = "192.168.1.0/24"
 DNS_SERVER   = "8.8.8.8"
 POLL_SECONDS = 30

@@ -68,7 +68,7 @@ def main():
     # ── Router ────────────────────────────────────────────────────────────────
     router_name = f"{tag}_router"
     router = conn.network.find_router(router_name)
-    ext_net = conn.network.find_network("public")
+    ext_net = conn.network.find_network("External")
     if not router:
         log(f"Did not detect {router_name}, adding it.")
         router = conn.network.create_router(
