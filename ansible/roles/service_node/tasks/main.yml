@@ -27,17 +27,22 @@
       After=network.target
 
       [Service]
-      ExecStart=/usr/bin/python3 /opt/service.py
+      WorkingDirectory=/opt
+      Environment=FLASK_APP=service.py
+      Environment=FLASK_RUN_HOST=0.0.0.0
+      Environment=FLASK_RUN_PORT=5000
+      ExecStart=/usr/bin/flask run
       Restart=always
+      RestartSec=3
 
       [Install]
       WantedBy=multi-user.target
 
-- name: Enable and start service_flask
+- name: Reload systemd and restart service_flask
   systemd:
     name: service_flask
     enabled: yes
-    state: started
+    state: restarted
     daemon_reload: yes
 
 - name: Write clean SNMPd config
