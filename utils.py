@@ -140,17 +140,18 @@ def build_ssh_config(path, bastion_ip, proxy_ip, node_ips, ssh_key, tag):
 
 
 def write_inventory(path, bastion_ip, proxy_ip, node_ips, tag):
+    proxy_jump = f"'-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ProxyJump=ubuntu@{bastion_ip}'"
     lines = [
         "[bastion]",
         f"{tag}_bastion ansible_host={bastion_ip}",
         "",
         "[proxy]",
-        f"{tag}_proxy ansible_host={proxy_ip}",
+        f"{tag}_proxy ansible_host={proxy_ip} ansible_ssh_common_args={proxy_jump}",
         "",
         "[nodes]",
     ]
     for i, ip in enumerate(node_ips, 1):
-        lines.append(f"{tag}_node{i} ansible_host={ip}")
+        lines.append(f"{tag}_node{i} ansible_host={ip} ansible_ssh_common_args={proxy_jump}")
     lines += [
         "",
         "[all:vars]",

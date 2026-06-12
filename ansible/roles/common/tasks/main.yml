@@ -9,12 +9,8 @@
     name:
       - python3
       - python3-pip
+      - python3-flask
       - snmpd
       - net-tools
       - iputils-ping
     state: present
-
-- name: Install Flask via pip
-  pip:
-    name: flask
-    executable: pip3
