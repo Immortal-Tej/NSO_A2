@@ -160,7 +160,7 @@ def main():
             build_ssh_config(ssh_cfg, bastion_ip, proxy_private,
                              node_ips, ssh_key, tag)
             write_inventory(inv_path, bastion_ip, proxy_private,
-                            node_ips, tag)
+                            node_ips, tag, ssh_key)
             log("Running playbook.")
             run_ansible(inv_path, ssh_key, ssh_cfg, tag,
                         proxy_private=proxy_private, node_ips=node_ips)

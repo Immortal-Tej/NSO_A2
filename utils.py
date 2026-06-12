@@ -139,24 +139,35 @@ def build_ssh_config(path, bastion_ip, proxy_ip, node_ips, ssh_key, tag):
         f.write("\n".join(lines))
 
 
-def write_inventory(path, bastion_ip, proxy_ip, node_ips, tag):
-    proxy_jump = f"'-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ProxyJump=ubuntu@{bastion_ip}'"
+def write_inventory(path, bastion_ip, proxy_ip, node_ips, tag, ssh_key=None):
+    bastion_args = "'-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'"
+    if ssh_key:
+        key = os.path.abspath(ssh_key)
+        jump_args = (
+            f"'-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+            f"-o ProxyCommand=ssh -i {key} -o StrictHostKeyChecking=no "
+            f"-o UserKnownHostsFile=/dev/null -W %h:%p ubuntu@{bastion_ip}'"
+        )
+    else:
+        jump_args = (
+            f"'-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+            f"-o ProxyJump=ubuntu@{bastion_ip}'"
+        )
     lines = [
         "[bastion]",
-        f"{tag}_bastion ansible_host={bastion_ip}",
+        f"{tag}_bastion ansible_host={bastion_ip} ansible_ssh_common_args={bastion_args}",
         "",
         "[proxy]",
-        f"{tag}_proxy ansible_host={proxy_ip} ansible_ssh_common_args={proxy_jump}",
+        f"{tag}_proxy ansible_host={proxy_ip} ansible_ssh_common_args={jump_args}",
         "",
         "[nodes]",
     ]
     for i, ip in enumerate(node_ips, 1):
-        lines.append(f"{tag}_node{i} ansible_host={ip} ansible_ssh_common_args={proxy_jump}")
+        lines.append(f"{tag}_node{i} ansible_host={ip} ansible_ssh_common_args={jump_args}")
     lines += [
         "",
         "[all:vars]",
         "ansible_user=ubuntu",
-        "ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'",
         f"tag={tag}",
     ]
     with open(path, "w") as f:

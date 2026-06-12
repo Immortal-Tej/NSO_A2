@@ -187,7 +187,7 @@ def main():
     ssh_config_path = f"{tag}_SSHconfig"
     inv_path        = f"{tag}_inventory"
     build_ssh_config(ssh_config_path, bastion_pub, proxy_private, node_ips, ssh_key, tag)
-    write_inventory(inv_path, bastion_pub, proxy_private, node_ips, tag)
+    write_inventory(inv_path, bastion_pub, proxy_private, node_ips, tag, ssh_key)
     log(f"SSH config saved to {ssh_config_path}.")
 
     # ── Ansible ───────────────────────────────────────────────────────────────
