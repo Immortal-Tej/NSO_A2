@@ -1,0 +1,2 @@
+origin	https://github.com/Immortal-Tej/NSO_A2.git (fetch)
+origin	https://github.com/Immortal-Tej/NSO_A2.git (push)
