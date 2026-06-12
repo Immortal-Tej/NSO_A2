@@ -207,6 +207,8 @@ def run_ansible(inventory, ssh_key, ssh_config, tag,
         env["ANSIBLE_SSH_EXECUTABLE"] = wrapper
     env["ANSIBLE_SSH_ARGS"] = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
     env["ANSIBLE_HOST_KEY_CHECKING"] = "False"
+    log(f"Waiting 60s for nodes to finish booting...")
+    time.sleep(60)
     log(f"Running playbook.")
     for attempt in range(1, 4):
         result = subprocess.run(cmd, env=env)
