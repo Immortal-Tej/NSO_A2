@@ -1,12 +1,21 @@
 ---
+- name: Wait for cloud-init to complete
+  command: cloud-init status --wait
+  changed_when: false
+  failed_when: false
+
 - name: Wait for dpkg lock to be released
-  shell: while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 5; done
+  shell: timeout 120 bash -c 'while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 5; done'
   changed_when: false
 
 - name: Update apt cache
   apt:
     update_cache: yes
     cache_valid_time: 3600
+  retries: 3
+  delay: 10
+  register: apt_cache_result
+  until: apt_cache_result is succeeded
 
 - name: Install common packages
   apt:
@@ -18,3 +27,7 @@
       - net-tools
       - iputils-ping
     state: present
+  retries: 3
+  delay: 10
+  register: apt_install_result
+  until: apt_install_result is succeeded

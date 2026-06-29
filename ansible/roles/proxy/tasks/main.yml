@@ -4,9 +4,11 @@
     name: haproxy
     state: present
 
-- name: Install socat for UDP relay
+- name: Install Nginx and stream module
   apt:
-    name: socat
+    name:
+      - nginx
+      - libnginx-mod-stream
     state: present
 
 - name: Write HAProxy config from template
@@ -21,35 +23,43 @@
     enabled: yes
     state: restarted
 
-- name: Write node IPs file for SNMP relay
-  copy:
-    dest: /opt/node_ips.txt
-    content: "{{ node_ips }}"
+- name: Remove default nginx http server block
+  file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
 
-- name: Copy SNMP relay script
-  copy:
-    src: snmp_relay.sh
-    dest: /opt/snmp_relay.sh
-    mode: '0755'
+- name: Remove existing stream block from nginx.conf if present
+  blockinfile:
+    path: /etc/nginx/nginx.conf
+    marker: "# {mark} ANSIBLE MANAGED STREAM BLOCK"
+    state: absent
 
-- name: Create systemd unit for SNMP relay
-  copy:
-    dest: /etc/systemd/system/snmp_relay.service
-    content: |
-      [Unit]
-      Description=SNMP UDP Relay port 6000 to nodes port 161
-      After=network.target
+- name: Write Nginx stream block for SNMP UDP load balancing
+  blockinfile:
+    path: /etc/nginx/nginx.conf
+    marker: "# {mark} ANSIBLE MANAGED STREAM BLOCK"
+    block: |
+      stream {
+          upstream snmp_backend {
+      {% for ip in node_ips.split(',') %}
+              server {{ ip }}:161;
+      {% endfor %}
+          }
+          server {
+              listen 6000 udp;
+              proxy_pass snmp_backend;
+              proxy_responses 1;
+              proxy_timeout 3s;
+          }
+      }
 
-      [Service]
-      ExecStart=/opt/snmp_relay.sh
-      Restart=always
+- name: Test Nginx configuration
+  command: nginx -t
+  changed_when: false
 
-      [Install]
-      WantedBy=multi-user.target
-
-- name: Enable and start SNMP relay
+- name: Enable and restart Nginx
   systemd:
-    name: snmp_relay
+    name: nginx
     enabled: yes
-    state: started
+    state: restarted
     daemon_reload: yes

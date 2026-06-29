@@ -5,19 +5,19 @@ import subprocess
 import requests
 from datetime import datetime
 
-FLAVOUR      = "small"
-IMAGE_NAME   = "Ubuntu 24.04"
+FLAVOUR = "small"
+IMAGE_NAME = "Ubuntu 24.04"
 NETWORK_CIDR = "192.168.1.0/24"
-DNS_SERVER   = "8.8.8.8"
+DNS_SERVER = "8.8.8.8"
 POLL_SECONDS = 30
 
 
-def log(msg: str):
+def log(msg):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"{ts} {msg}", flush=True)
 
 
-def load_openrc(path: str):
+def load_openrc(path):
     if not os.path.isfile(path):
         log(f"ERROR: openrc file not found: {path}")
         sys.exit(1)
@@ -39,7 +39,7 @@ def load_openrc(path: str):
         sys.exit(1)
 
 
-def read_servers_conf(path: str = "servers.conf") -> int:
+def read_servers_conf(path="servers.conf"):
     if not os.path.isfile(path):
         return 3
     with open(path) as f:
@@ -53,8 +53,8 @@ def read_servers_conf(path: str = "servers.conf") -> int:
     return 3
 
 
-def get_or_allocate_floating_ips(conn, count: int):
-    all_fips   = list(conn.network.ips())
+def get_or_allocate_floating_ips(conn, count):
+    all_fips = list(conn.network.ips())
     unassigned = [f for f in all_fips if f.fixed_ip_address is None]
     log(f"Checking floating IPs, we have {len(unassigned)} unassigned available.")
     if len(all_fips) >= count:
@@ -71,7 +71,7 @@ def get_or_allocate_floating_ips(conn, count: int):
     return result
 
 
-def wait_for_active(conn, server_id: str, timeout: int = 300):
+def wait_for_active(conn, server_id, timeout=300):
     deadline = time.time() + timeout
     print("    ", end="", flush=True)
     while time.time() < deadline:
@@ -104,6 +104,38 @@ def floating_ip(server):
             if a["OS-EXT-IPS:type"] == "floating":
                 return a["addr"]
     return None
+
+
+def write_ssh_wrapper(bastion_ip, ssh_key, tag):
+    key = os.path.abspath(ssh_key)
+    wrapper_path = os.path.abspath(f"{tag}_ssh_wrapper.sh")
+    content = f"""#!/bin/bash
+TARGET=${{@: -1}}
+if [[ "$TARGET" == "{bastion_ip}" ]]; then
+    exec ssh -i {key} \\
+        -o StrictHostKeyChecking=no \\
+        -o UserKnownHostsFile=/dev/null \\
+        -o ConnectTimeout=15 \\
+        -o ConnectionAttempts=3 \\
+        -o ServerAliveInterval=10 \\
+        -o ServerAliveCountMax=3 \\
+        "$@"
+else
+    exec ssh -i {key} \\
+        -o StrictHostKeyChecking=no \\
+        -o UserKnownHostsFile=/dev/null \\
+        -o ConnectTimeout=15 \\
+        -o ConnectionAttempts=3 \\
+        -o ServerAliveInterval=10 \\
+        -o ServerAliveCountMax=3 \\
+        -o "ProxyCommand=ssh -i {key} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -W %h:%p ubuntu@{bastion_ip}" \\
+        "$@"
+fi
+"""
+    with open(wrapper_path, "w") as f:
+        f.write(content)
+    os.chmod(wrapper_path, 0o755)
+    return wrapper_path
 
 
 def build_ssh_config(path, bastion_ip, proxy_ip, node_ips, ssh_key, tag):
@@ -162,32 +194,53 @@ def write_inventory(path, bastion_ip, proxy_ip, node_ips, tag, ssh_key=None):
         f.write("\n".join(lines) + "\n")
 
 
-def write_ssh_wrapper(bastion_ip, ssh_key, tag):
-    key = os.path.abspath(ssh_key)
-    wrapper_path = os.path.abspath(f"{tag}_ssh_wrapper.sh")
-    content = f"""#!/bin/bash
-TARGET=${{@: -1}}
-if [[ "$TARGET" == "{bastion_ip}" ]]; then
-    exec ssh -i {key} \\
-        -o StrictHostKeyChecking=no \\
-        -o UserKnownHostsFile=/dev/null \\
-        "$@"
-else
-    exec ssh -i {key} \\
-        -o StrictHostKeyChecking=no \\
-        -o UserKnownHostsFile=/dev/null \\
-        -o "ProxyCommand=ssh -i {key} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p ubuntu@{bastion_ip}" \\
-        "$@"
-fi
-"""
-    with open(wrapper_path, 'w') as f:
-        f.write(content)
-    os.chmod(wrapper_path, 0o755)
-    return wrapper_path
+def wait_for_ssh_ready(host, ssh_key, proxy_jump=None, timeout=120):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        cmd = ["ssh", "-i", ssh_key,
+               "-o", "StrictHostKeyChecking=no",
+               "-o", "UserKnownHostsFile=/dev/null",
+               "-o", "ConnectTimeout=5",
+               "-o", "BatchMode=yes"]
+        if proxy_jump:
+            cmd += ["-o", f"ProxyCommand=ssh -i {ssh_key} -o StrictHostKeyChecking=no "
+                          f"-o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 "
+                          f"-W %h:%p ubuntu@{proxy_jump}"]
+        cmd += [f"ubuntu@{host}", "echo ready"]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            if "ready" in result.stdout:
+                return True
+        except Exception:
+            pass
+        time.sleep(5)
+    return False
 
 
-def run_ansible(inventory, ssh_key, ssh_config, tag,
-                proxy_private=None, node_ips=None, bastion_ip=None):
+def wait_for_all_ssh_ready(bastion_ip, node_ips, ssh_key, proxy_private=None, timeout=180):
+    log("Waiting for bastion SSH to become ready...")
+    if not wait_for_ssh_ready(bastion_ip, ssh_key, timeout=timeout):
+        log("WARNING: bastion SSH did not become ready within timeout, proceeding anyway.")
+        return
+    log("Bastion SSH ready. Waiting for nodes via bastion...")
+    targets = list(node_ips)
+    if proxy_private:
+        targets.append(proxy_private)
+    deadline = time.time() + timeout
+    pending = set(targets)
+    while pending and time.time() < deadline:
+        for ip in list(pending):
+            if wait_for_ssh_ready(ip, ssh_key, proxy_jump=bastion_ip, timeout=5):
+                pending.discard(ip)
+        if pending:
+            time.sleep(5)
+    if pending:
+        log(f"WARNING: these hosts did not confirm SSH ready in time: {pending}")
+    else:
+        log("All hosts confirmed SSH ready.")
+
+
+def run_ansible(inventory, ssh_key, ssh_config, tag, proxy_private=None, node_ips=None, bastion_ip=None):
     extra_vars = f"tag={tag}"
     if proxy_private:
         extra_vars += f" proxy_private_ip={proxy_private}"
@@ -199,19 +252,29 @@ def run_ansible(inventory, ssh_key, ssh_config, tag,
         "--private-key", ssh_key,
         "-e", extra_vars,
         "--timeout", "30",
-        "ansible/site.yml"
+        "ansible/site.yml",
     ]
     env = os.environ.copy()
     if bastion_ip:
         wrapper = write_ssh_wrapper(bastion_ip, ssh_key, tag)
         env["ANSIBLE_SSH_EXECUTABLE"] = wrapper
-    env["ANSIBLE_SSH_ARGS"] = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+    env["ANSIBLE_SSH_ARGS"] = (
+        "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+        "-o ServerAliveInterval=10 -o ServerAliveCountMax=3 "
+        "-o ConnectTimeout=15"
+    )
     env["ANSIBLE_HOST_KEY_CHECKING"] = "False"
-    log(f"Waiting 60s for nodes to finish booting...")
-    time.sleep(60)
-    log(f"Running playbook.")
+    if bastion_ip:
+        wait_for_all_ssh_ready(bastion_ip, node_ips or [], ssh_key, proxy_private=proxy_private)
+    log("Running playbook.")
     for attempt in range(1, 4):
-        result = subprocess.run(cmd, env=env)
+        try:
+            result = subprocess.run(cmd, env=env, timeout=600)
+        except subprocess.TimeoutExpired:
+            log(f"Playbook attempt {attempt} exceeded 10 minute hard limit, aborting attempt.")
+            log(f"Playbook attempt {attempt} failed, retrying in 20s...")
+            time.sleep(20)
+            continue
         if result.returncode == 0:
             return
         log(f"Playbook attempt {attempt} failed, retrying in 20s...")
@@ -220,12 +283,13 @@ def run_ansible(inventory, ssh_key, ssh_config, tag,
     sys.exit(1)
 
 
-def validate_service(proxy_ip: str, port: int = 5000, attempts: int = 4):
+def validate_service(proxy_ip, port=5000, attempts=4):
     url = f"http://{proxy_ip}:{port}/"
     for i in range(1, attempts + 1):
         try:
-            r = requests.get(url, timeout=5)
+            r = requests.get(url, timeout=8)
             log(f"Request{i}: {r.text.strip()}")
         except Exception as e:
             log(f"Request{i}: FAILED ({e})")
+        time.sleep(1)
     log("OK")
